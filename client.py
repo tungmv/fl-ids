@@ -2,13 +2,36 @@ import os
 import flwr as fl
 import utils.data_loader as data_loader
 import utils.model_loader as model_loader
+import numpy as np
 
 # Make tensorflow log less verbose
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 class Client(fl.client.NumPyClient):
-    def __init__(self):
-        self.X_train, self.Y_train, self.X_test, self.Y_test = data_loader.get_data()
+    def __init__(self, cid: str, num_clients: int):
+        # Load full dataset
+        X_train, Y_train, X_test, Y_test = data_loader.get_data()
+        
+        # Calculate partition indices
+        train_size = len(X_train)
+        test_size = len(X_test)
+        train_items_per_client = train_size // num_clients
+        test_items_per_client = test_size // num_clients
+        
+        # Get client's partition
+        client_idx = int(cid)
+        train_start = client_idx * train_items_per_client
+        train_end = train_start + train_items_per_client
+        test_start = client_idx * test_items_per_client
+        test_end = test_start + test_items_per_client
+        
+        # Partition the data for this client
+        self.X_train = X_train[train_start:train_end]
+        self.Y_train = Y_train[train_start:train_end]
+        self.X_test = X_test[test_start:test_end]
+        self.Y_test = Y_test[test_start:test_end]
+        
+        # Initialize the model
         self.model = model_loader.get_model(self.X_train.shape[1:])
 
     def get_parameters(self, config):

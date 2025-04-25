@@ -4,15 +4,17 @@ import os
 from server import get_server_strategy 
 
 # Make tensorflow log less verbose
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+
+NUM_CLIENTS = 10
 
 def create_client(cid):
-    return client.Client()
+    return client.Client(cid, NUM_CLIENTS)
 
 if __name__ == "__main__":
     history = fl.simulation.start_simulation(
         client_fn=create_client,
-        num_clients=3,
+        num_clients=NUM_CLIENTS,
         strategy=get_server_strategy(),
         config=fl.server.ServerConfig(num_rounds=3),
     )
