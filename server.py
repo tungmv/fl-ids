@@ -2,7 +2,7 @@ import flwr as fl
 import os
 
 # Make tensorflow log less verbose
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 def weighted_average(metrics):
     total_examples = 0
