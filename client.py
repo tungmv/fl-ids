@@ -9,6 +9,10 @@ from sklearn.model_selection import train_test_split
 # Make tensorflow log less verbose
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
+# Get dataset type from environment variable or default to "unsw"
+DATASET_TYPE = os.getenv("DATASET_TYPE", "unsw")
+assert DATASET_TYPE in ["unsw", "cic"], "Invalid dataset type"
+
 class PartitioningStrategy:
     @staticmethod
     def iid_partition(X, Y, num_clients: int, client_idx: int) -> Tuple[np.ndarray, np.ndarray]:
@@ -64,8 +68,12 @@ class Client(fl.client.NumPyClient):
             num_clients: Total number of clients
             partition_type: One of ["iid", "quantity_skew", "label_skew"]
         """
-        # Load full dataset
-        X_train, Y_train, X_test, Y_test = data_loader.get_data()
+        # Load full dataset based on DATASET_TYPE
+        if DATASET_TYPE == "unsw":
+            X_train, Y_train, X_test, Y_test = data_loader.get_data()
+        else:  # cic
+            X_train, Y_train, X_test, Y_test = data_loader.get_data_cic()
+            
         client_idx = int(cid)
 
         # Select partitioning strategy
@@ -91,7 +99,7 @@ class Client(fl.client.NumPyClient):
             raise ValueError(f"Unknown partition type: {partition_type}")
 
         print(f"Client {cid} initialized with {len(self.X_train)} training samples "
-              f"and {len(self.X_test)} test samples")
+              f"and {len(self.X_test)} test samples using {DATASET_TYPE.upper()} dataset")
         
         # Initialize the model
         self.model = model_loader.get_model(self.X_train.shape[1:])

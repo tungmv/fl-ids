@@ -7,8 +7,10 @@ from FedAGRU_server import get_server_strategy as get_fedagru_strategy
 # Make tensorflow log less verbose
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
+# Get number of clients from environment variable or default to 3
 NUM_CLIENTS = int(os.getenv("CLIENTS", 3))
-# Get partition type from command-line argument or default to "iid"
+
+# Get partition type from environment variable or default to "iid"
 PARTITION_TYPE = os.getenv("PARTITION_TYPE", "iid")
 assert PARTITION_TYPE in ["iid", "quantity_skew", "label_skew"], "Invalid partition type"
 
@@ -16,10 +18,20 @@ assert PARTITION_TYPE in ["iid", "quantity_skew", "label_skew"], "Invalid partit
 STRATEGY_TYPE = os.getenv("STRATEGY_TYPE", "fedavg")
 assert STRATEGY_TYPE in ["fedavg", "fedagru"], "Invalid strategy type"
 
+# Get dataset type from environment variable or default to "unsw"
+DATASET_TYPE = os.getenv("DATASET_TYPE", "unsw")
+assert DATASET_TYPE in ["unsw", "cic"], "Invalid dataset type"
+
 def create_client(cid):
     return client.Client(cid, NUM_CLIENTS, partition_type=PARTITION_TYPE)
 
 if __name__ == "__main__":
+    print(f"Starting simulation with:")
+    print(f"- Strategy: {STRATEGY_TYPE.upper()}")
+    print(f"- Dataset: {DATASET_TYPE.upper()}")
+    print(f"- Partition: {PARTITION_TYPE}")
+    print(f"- Number of clients: {NUM_CLIENTS}")
+
     # Select strategy based on STRATEGY_TYPE
     if STRATEGY_TYPE == "fedavg":
         strategy = get_fedavg_strategy()
