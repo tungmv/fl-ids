@@ -1,7 +1,11 @@
 #!/bin/bash
 
 # Create results directory if it doesn't exist
-mkdir -p results
+mkdir -p results/configs results/logs
+
+# Initialize summary file
+SUMMARY_FILE="results/test_summary.csv"
+echo "Test ID,Dataset,Strategy,Partition,Clients,Status,Runtime(s),Accuracy,Loss" > $SUMMARY_FILE
 
 # Function to run a test and save output
 run_test() {
@@ -10,71 +14,78 @@ run_test() {
     local strategy=$3
     local partition=$4
     local clients=$5
-    
+
     echo "Running test: $test_name"
-    echo "Configuration:"
-    echo "- Dataset: $dataset"
-    echo "- Strategy: $strategy"
-    echo "- Partition: $partition"
-    echo "- Clients: $clients"
-    
-    # Run the simulation and save output
-    DATASET_TYPE=$dataset \
-    STRATEGY_TYPE=$strategy \
-    PARTITION_TYPE=$partition \
-    CLIENTS=$clients \
-    python3 simulation.py > "results/${test_name}.log" 2>&1
-    
-    echo "Test completed. Results saved to results/${test_name}.log"
+    echo "Configuration: $dataset $strategy ($partition partition, $clients clients)"
+
+    # Record start time and run the simulation
+    start_time=$(date +%s)
+    echo "Running: DATASET_TYPE=$dataset STRATEGY_TYPE=$strategy PARTITION_TYPE=$partition CLIENTS=$clients python3 simulation.py"
+    DATASET_TYPE=$dataset STRATEGY_TYPE=$strategy PARTITION_TYPE=$partition CLIENTS=$clients \
+    timeout 3600 python3 simulation.py > "results/logs/${test_name}.log" 2>&1
+    status=$?
+    runtime=$(($(date +%s) - start_time))
+
+    # Extract metrics from log
+    accuracy=$(grep -o "After .* rounds of training the accuracy is [0-9.]*%" "results/logs/${test_name}.log" | sed -E 's/.*accuracy is ([0-9.]*)%.*/\1/' || echo "N/A")
+    loss=$(grep -A 10 "'loss'" "results/logs/${test_name}.log" | grep -o "(3, [0-9.]*)" | head -1 | sed -E 's/\(3, ([0-9.]*)\)/\1/' || echo "N/A")
+
+    # Report results
+    if [ $status -eq 0 ]; then
+        echo "✓ Success (${runtime}s): Accuracy=${accuracy}%, Loss=${loss}"
+        status_text="SUCCESS"
+    else
+        echo "✗ Failed (${runtime}s)"
+        status_text="FAILED"
+    fi
+
+    # Add to summary
+    echo "${test_name#test},${dataset},${strategy},${partition},${clients},${status_text},${runtime},${accuracy},${loss}" >> $SUMMARY_FILE
     echo "----------------------------------------"
 }
+# Run tests for all configurations
+echo "Starting test batch..."
 
-# Test 1: Basic UNSW with FedAvg
-run_test "test1_unsw_fedavg_iid" "unsw" "fedavg" "iid" "3"
+# Create array of parameters
+clients_arr=(5 10 15 20 30)
+partition_arr=("iid" "label_skew" "quantity_skew")
+strategy_arr=("fedavg" "fedagru")
+#dataset_arr=("cic" "unsw")
+dataset_arr=("unsw")
 
-# Test 2: Basic CIC with FedAvg
-run_test "test2_cic_fedavg_iid" "cic" "fedavg" "iid" "3"
+# Run all combinations
+for dataset in "${dataset_arr[@]}"; do
+    for strategy in "${strategy_arr[@]}"; do
+        for partition in "${partition_arr[@]}"; do
+            for clients in "${clients_arr[@]}"; do
+                test_id="${dataset}_${strategy}_${partition}_${clients}"
+                run_test "$test_id" "$dataset" "$strategy" "$partition" "$clients"
+            done
+        done
+    done
+done
 
-# Test 3: UNSW with FedAGRU
-run_test "test3_unsw_fedagru_iid" "unsw" "fedagru" "iid" "3"
+# Generate report
+echo "Generating summary report..."
+{
+    echo "===== FL-IDS Test Summary ====="
+    echo "Total tests: $(grep -c "," $SUMMARY_FILE | awk '{print $1-1}')"
+    echo "Successful tests: $(grep -c "SUCCESS" $SUMMARY_FILE)"
+    echo "Failed tests: $(grep -c "FAILED" $SUMMARY_FILE)"
+    echo ""
 
-# Test 4: CIC with FedAGRU
-run_test "test4_cic_fedagru_iid" "cic" "fedagru" "iid" "3"
+    # Show top performers by accuracy
+    echo "Best performing configurations by accuracy:"
+    grep "SUCCESS" $SUMMARY_FILE | sort -t ',' -k8 -nr | head -5 |
+      awk -F ',' '{printf "- %s with %s (%s partition, %s clients): Accuracy=%s%%, Loss=%s\n",
+                          $2, $3, $4, $5, $8, $9}'
 
-# Test 5: UNSW with quantity skew
-run_test "test5_unsw_fedavg_quantity" "unsw" "fedavg" "quantity_skew" "5"
+    echo ""
+    echo "Best performing configurations by lowest loss:"
+    grep "SUCCESS" $SUMMARY_FILE | sort -t ',' -k9 -n | head -5 |
+      awk -F ',' '{printf "- %s with %s (%s partition, %s clients): Accuracy=%s%%, Loss=%s\n",
+                          $2, $3, $4, $5, $8, $9}'
+} > "results/summary_report.txt"
 
-# Test 6: CIC with quantity skew
-run_test "test6_cic_fedavg_quantity" "cic" "fedavg" "quantity_skew" "5"
-
-# Test 7: UNSW with label skew
-run_test "test7_unsw_fedagru_label" "unsw" "fedagru" "label_skew" "5"
-
-# Test 8: CIC with label skew
-run_test "test8_cic_fedagru_label" "cic" "fedagru" "label_skew" "5"
-
-# Test 9: UNSW with more clients
-run_test "test9_unsw_fedavg_many_clients" "unsw" "fedavg" "iid" "10"
-
-# Test 10: CIC with more clients
-run_test "test10_cic_fedagru_many_clients" "cic" "fedagru" "iid" "10"
-
-# Test 11: UNSW with quantity skew and more clients
-run_test "test11_unsw_fedavg_quantity_many" "unsw" "fedavg" "quantity_skew" "10"
-
-# Test 12: CIC with quantity skew and more clients  
-run_test "test12_cic_fedavg_quantity_many" "cic" "fedavg" "quantity_skew" "10"
-
-# Test 13: UNSW with label skew and FedAGRU with more clients
-run_test "test13_unsw_fedagru_label_many" "unsw" "fedagru" "label_skew" "10"
-
-# Test 14: CIC with label skew and FedAGRU with more clients
-run_test "test14_cic_fedagru_label_many" "cic" "fedagru" "label_skew" "10"
-
-# Test 15: UNSW with very large number of clients
-run_test "test15_unsw_fedavg_massive" "unsw" "fedavg" "iid" "15"
-
-# Test 16: CIC with very large number of clients
-run_test "test16_cic_fedagru_massive" "cic" "fedagru" "iid" "15"
-
-echo "All tests completed. Results are in the 'results' directory." 
+echo "All tests completed. Results in 'results' directory."
+echo "Summary report available at results/summary_report.txt"
