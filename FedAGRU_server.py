@@ -4,7 +4,7 @@ import numpy as np
 from typing import Dict, List, Optional, Tuple, Union, Any
 from flwr.common import (
     EvaluateRes,
-    FitRes, 
+    FitRes,
     Parameters,
     Scalar,
     parameters_to_ndarrays,
@@ -27,11 +27,11 @@ def weighted_average(metrics):
 
 class FedAGRU(FedAvg):
     """Federated Attentive Gated Recurrent Unit (FedAGRU) strategy.
-    
+
     This is a custom implementation of FedAGRU that extends FedAvg with an attention
     mechanism to assign importance weights to client updates.
     """
-    
+
     def __init__(
         self,
         *,
@@ -54,7 +54,7 @@ class FedAGRU(FedAvg):
         self.attention_decay = attention_decay
         # Initialize client attention weights (empty dict to start)
         self.client_attention: Dict[str, float] = {}
-    
+
     def aggregate_fit(
         self,
         server_round: int,
@@ -64,19 +64,19 @@ class FedAGRU(FedAvg):
         """Aggregate model updates using attention weights."""
         if not results:
             return None, {}
-        
+
         # Update attention weights based on client performance
         for client, fit_res in results:
             client_id = client.cid
             # Use accuracy or loss as performance metric
             client_loss = fit_res.metrics.get("loss", 0.0)
-            
+
             # Update attention weight with decay factor
             # Higher loss = lower attention weight
             if client_id in self.client_attention:
                 prev_weight = self.client_attention[client_id]
                 # Normalize loss to be between 0 and 1 (approximation)
-                normalized_performance = 1.0 / (1.0 + client_loss)
+                normalized_performance = 1.0 / (1.0 + float(client_loss))
                 # Apply decay and update
                 self.client_attention[client_id] = (
                     self.attention_decay * prev_weight +
@@ -84,12 +84,12 @@ class FedAGRU(FedAvg):
                 )
             else:
                 # Initialize with normalized performance
-                normalized_performance = 1.0 / (1.0 + client_loss)
+                normalized_performance = 1.0 / (1.0 + float(client_loss))
                 self.client_attention[client_id] = normalized_performance
-        
+
         # Get total attention weights
         total_attention = sum(self.client_attention.values())
-        
+
         # Convert results to list of weights and num_examples
         weights_results = [
             (
@@ -98,30 +98,30 @@ class FedAGRU(FedAvg):
             )
             for client, fit_res in results
         ]
-        
+
         # Aggregate parameters weighted by attention-adjusted num_examples
         parameters_aggregated = self.aggregate_parameters(weights_results)
-        
+
         # Convert parameters back to required format
         parameters_aggregated = ndarrays_to_parameters(parameters_aggregated)
-        
+
         # Also return statistics for clients
         metrics_aggregated = {}
         if self.fit_metrics_aggregation_fn:
             metrics = [(fit_res.num_examples, fit_res.metrics) for _, fit_res in results]
             metrics_aggregated = self.fit_metrics_aggregation_fn(metrics)
-        
+
         return parameters_aggregated, metrics_aggregated
-    
+
     def aggregate_parameters(self, results):
         """Aggregate parameters based on weighted results."""
         # Extract weights and their corresponding importance
         weights = [parameters for parameters, _ in results]
         attention_weights = np.array([importance for _, importance in results])
-        
+
         # Normalize weights
         attention_weights = attention_weights / np.sum(attention_weights)
-        
+
         # Create a list of aggregated weights
         aggregated_weights = []
         for i in range(len(weights[0])):
@@ -133,7 +133,7 @@ class FedAGRU(FedAvg):
                 axis=0,
             )
             aggregated_weights.append(weighted_update)
-        
+
         return aggregated_weights
 
 def get_server_strategy(num_clients=10):
@@ -144,7 +144,7 @@ def get_server_strategy(num_clients=10):
             fit_metrics_aggregation_fn=weighted_average,
             evaluate_metrics_aggregation_fn=weighted_average,
         )
-    
+
 if __name__ == "__main__":
     import sys
     num_clients = int(sys.argv[1]) if len(sys.argv) > 1 else 10
