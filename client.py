@@ -14,49 +14,132 @@ DATASET_TYPE = os.getenv("DATASET_TYPE", "unsw")
 assert DATASET_TYPE in ["unsw", "cic"], "Invalid dataset type"
 
 class PartitioningStrategy:
+    # Cache for distributions to ensure consistency across clients
+    _quantity_distributions = {}  # Experiment seed -> proportions array
+    _label_distributions = {}     # Experiment seed -> client -> label distributions
+    
+    @staticmethod
+    def _get_experiment_seed():
+        """Get a consistent seed for the experiment based on environment variables"""
+        # Use experiment ID or default to a fixed value for reproducibility
+        return int(os.getenv("EXPERIMENT_SEED", "42"))
+    
     @staticmethod
     def iid_partition(X, Y, num_clients: int, client_idx: int) -> Tuple[np.ndarray, np.ndarray]:
-        """IID partitioning: Uniform random split among clients"""
+        """IID partitioning: Uniform random split among clients after shuffling"""
+        # Create a deterministic random state based on experiment seed
+        seed = PartitioningStrategy._get_experiment_seed()
+        rng = np.random.RandomState(seed)
+        
+        # Generate shuffled indices
         n_samples = len(X)
+        indices = np.arange(n_samples)
+        rng.shuffle(indices)
+        
+        # Divide shuffled data among clients
         samples_per_client = n_samples // num_clients
         start_idx = client_idx * samples_per_client
-        end_idx = start_idx + samples_per_client
-        return X[start_idx:end_idx], Y[start_idx:end_idx]
+        end_idx = start_idx + samples_per_client if client_idx < num_clients - 1 else n_samples
+        
+        selected_indices = indices[start_idx:end_idx]
+        return X[selected_indices], Y[selected_indices]
 
     @staticmethod
     def quantity_skew_partition(X, Y, num_clients: int, client_idx: int, 
                               min_samples: Optional[int] = None) -> Tuple[np.ndarray, np.ndarray]:
         """Non-IID partitioning with quantity skew: Different amounts of data per client"""
         n_samples = len(X)
-        # Create dirichlet distribution for quantity skew
-        proportions = np.random.dirichlet(np.repeat(0.5, num_clients))
-        # Ensure minimum samples per client if specified
-        if min_samples:
-            proportions = np.clip(proportions, min_samples/n_samples, 1.0)
-            proportions = proportions / proportions.sum()
+        seed = PartitioningStrategy._get_experiment_seed()
+        
+        # Use cached distribution or create a new one
+        if seed not in PartitioningStrategy._quantity_distributions:
+            # Set seed for reproducibility
+            np.random.seed(seed)
+            # Create dirichlet distribution for quantity skew
+            proportions = np.random.dirichlet(np.repeat(0.5, num_clients))
+            # Ensure minimum samples per client if specified
+            if min_samples:
+                proportions = np.clip(proportions, min_samples/n_samples, 1.0)
+                proportions = proportions / proportions.sum()
+            
+            PartitioningStrategy._quantity_distributions[seed] = proportions
+            
+        proportions = PartitioningStrategy._quantity_distributions[seed]
+        
+        # Create a shuffled dataset first for true randomness
+        rng = np.random.RandomState(seed)
+        indices = np.arange(n_samples)
+        rng.shuffle(indices)
         
         # Calculate cumulative sample indices
         cumsum = np.round(np.cumsum(proportions) * n_samples).astype(int)
+        cumsum[-1] = n_samples  # Ensure we use all samples
+        
+        # Get this client's partition
         start_idx = 0 if client_idx == 0 else cumsum[client_idx-1]
         end_idx = cumsum[client_idx]
-        return X[start_idx:end_idx], Y[start_idx:end_idx]
+        
+        selected_indices = indices[start_idx:end_idx]
+        return X[selected_indices], Y[selected_indices]
 
     @staticmethod
     def label_skew_partition(X, Y, num_clients: int, client_idx: int, 
                            concentration: float = 0.5) -> Tuple[np.ndarray, np.ndarray]:
         """Non-IID partitioning with label skew: Different label distributions per client"""
+        seed = PartitioningStrategy._get_experiment_seed()
         unique_labels = np.unique(Y)
-        # Create label distribution for each client using Dirichlet distribution
-        label_distribution = np.random.dirichlet(np.repeat(concentration, len(unique_labels)))
         
-        # Select samples based on label distribution
+        # Initialize distributions cache for this experiment if needed
+        if seed not in PartitioningStrategy._label_distributions:
+            PartitioningStrategy._label_distributions[seed] = {}
+            
+            # Set seed for reproducibility
+            np.random.seed(seed)
+            
+            # Create label-client assignment matrix (rows=clients, cols=labels)
+            # Each row is a distribution over labels for that client
+            all_distributions = np.random.dirichlet(
+                np.repeat(concentration, len(unique_labels)), 
+                size=num_clients
+            )
+            
+            # Store all client distributions
+            for idx in range(num_clients):
+                PartitioningStrategy._label_distributions[seed][idx] = all_distributions[idx]
+        
+        # Get this client's label distribution
+        label_distribution = PartitioningStrategy._label_distributions[seed][client_idx]
+        
+        # For consistency in sampling, use a deterministic RNG
+        rng = np.random.RandomState(seed + client_idx)
+        
+        # Organize data by label
+        label_to_indices = {label: np.where(Y == label)[0] for label in unique_labels}
+        
+        # Create a client-specific partition for each label
+        # To avoid overlaps, we'll divide indices for each label among clients
         selected_indices = []
         for label_idx, label in enumerate(unique_labels):
-            label_indices = np.where(Y == label)[0]
-            n_samples = int(len(label_indices) * label_distribution[label_idx])
-            selected_indices.extend(np.random.choice(label_indices, n_samples, replace=False))
+            label_indices = label_to_indices[label]
+            # Shuffle indices for this label
+            rng.shuffle(label_indices)
+            
+            # Determine how many samples for this client based on distribution
+            proportion_for_client = label_distribution[label_idx]
+            n_samples_total = len(label_indices)
+            client_samples = int(proportion_for_client * n_samples_total / num_clients)
+            
+            # Take a unique slice for this client
+            start = client_idx * client_samples
+            end = min(start + client_samples, n_samples_total)
+            client_indices = label_indices[start:end]
+            selected_indices.extend(client_indices)
         
         selected_indices = np.array(selected_indices)
+        
+        # Shuffle final selection for good measure
+        rng.shuffle(selected_indices)
+        
         return X[selected_indices], Y[selected_indices]
 
 class Client(fl.client.NumPyClient):
