@@ -3,6 +3,8 @@ import flwr as fl
 import utils.data_loader as data_loader
 import utils.model_loader as model_loader
 import numpy as np
+import pickle
+import pathlib
 from typing import Tuple, Dict, Optional
 from sklearn.model_selection import train_test_split
 
@@ -12,6 +14,67 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 # Get dataset type from environment variable or default to "unsw"
 DATASET_TYPE = os.getenv("DATASET_TYPE", "unsw")
 assert DATASET_TYPE in ["unsw", "cic"], "Invalid dataset type"
+
+# Check if using pre-partitioned data
+USE_PREPARTITIONED = os.getenv("USE_PREPARTITIONED", "0") == "1"
+# Directory for pre-partitioned data
+PARTITION_DIR = os.getenv("PARTITION_DIR", "data/partitions")
+
+def save_partitions(partition_type, num_clients, dataset_type="unsw"):
+    """Pre-partition data and save to disk for later use
+    
+    Args:
+        partition_type: Type of partitioning ("iid", "quantity_skew", "label_skew")
+        num_clients: Number of clients to create partitions for
+        dataset_type: Type of dataset ("unsw" or "cic")
+    """
+    # Load full dataset based on dataset_type
+    if dataset_type == "unsw":
+        X_train, Y_train, X_test, Y_test = data_loader.get_data()
+    else:  # cic
+        X_train, Y_train, X_test, Y_test = data_loader.get_data_cic()
+    
+    # Create partitions directory if it doesn't exist
+    partition_path = pathlib.Path(f"{PARTITION_DIR}/{dataset_type}/{partition_type}/{num_clients}")
+    partition_path.mkdir(parents=True, exist_ok=True)
+    
+    print(f"Creating {num_clients} partitions with {partition_type} strategy for {dataset_type} dataset")
+    
+    # Create partitions for each client
+    for client_idx in range(num_clients):
+        if partition_type == "iid":
+            client_X_train, client_Y_train = PartitioningStrategy.iid_partition(
+                X_train, Y_train, num_clients, client_idx)
+            client_X_test, client_Y_test = PartitioningStrategy.iid_partition(
+                X_test, Y_test, num_clients, client_idx)
+        
+        elif partition_type == "quantity_skew":
+            client_X_train, client_Y_train = PartitioningStrategy.quantity_skew_partition(
+                X_train, Y_train, num_clients, client_idx, min_samples=100)
+            client_X_test, client_Y_test = PartitioningStrategy.quantity_skew_partition(
+                X_test, Y_test, num_clients, client_idx, min_samples=50)
+        
+        elif partition_type == "label_skew":
+            client_X_train, client_Y_train = PartitioningStrategy.label_skew_partition(
+                X_train, Y_train, num_clients, client_idx)
+            client_X_test, client_Y_test = PartitioningStrategy.label_skew_partition(
+                X_test, Y_test, num_clients, client_idx)
+        
+        # Save the partitioned data
+        client_data = {
+            "X_train": client_X_train,
+            "Y_train": client_Y_train,
+            "X_test": client_X_test,
+            "Y_test": client_Y_test
+        }
+        
+        with open(f"{partition_path}/client_{client_idx}.pkl", "wb") as f:
+            pickle.dump(client_data, f)
+            
+        print(f"Saved partition for client {client_idx} with {len(client_X_train)} training samples "
+              f"and {len(client_X_test)} test samples")
+              
+    print(f"All partitions saved to {partition_path}")
 
 class PartitioningStrategy:
     # Cache for distributions to ensure consistency across clients
@@ -151,6 +214,35 @@ class Client(fl.client.NumPyClient):
             num_clients: Total number of clients
             partition_type: One of ["iid", "quantity_skew", "label_skew"]
         """
+        client_idx = int(cid)
+        
+        # Load pre-partitioned data if enabled
+        if USE_PREPARTITIONED:
+            partition_path = f"{PARTITION_DIR}/{DATASET_TYPE}/{partition_type}/{num_clients}/client_{client_idx}.pkl"
+            try:
+                with open(partition_path, "rb") as f:
+                    client_data = pickle.load(f)
+                    self.X_train = client_data["X_train"]
+                    self.Y_train = client_data["Y_train"]
+                    self.X_test = client_data["X_test"]
+                    self.Y_test = client_data["Y_test"]
+                print(f"Client {cid} loaded pre-partitioned data from {partition_path}")
+            except FileNotFoundError:
+                print(f"Warning: Pre-partitioned data not found at {partition_path}")
+                print("Falling back to on-the-fly partitioning")
+                self._load_and_partition(cid, num_clients, partition_type)
+        else:
+            # Perform on-the-fly partitioning
+            self._load_and_partition(cid, num_clients, partition_type)
+
+        print(f"Client {cid} initialized with {len(self.X_train)} training samples "
+              f"and {len(self.X_test)} test samples using {DATASET_TYPE.upper()} dataset")
+        
+        # Initialize the model
+        self.model = model_loader.get_model(self.X_train.shape[1:])
+        
+    def _load_and_partition(self, cid: str, num_clients: int, partition_type: str):
+        """Helper method to load and partition data on-the-fly"""
         # Load full dataset based on DATASET_TYPE
         if DATASET_TYPE == "unsw":
             X_train, Y_train, X_test, Y_test = data_loader.get_data()
@@ -180,12 +272,6 @@ class Client(fl.client.NumPyClient):
         
         else:
             raise ValueError(f"Unknown partition type: {partition_type}")
-
-        print(f"Client {cid} initialized with {len(self.X_train)} training samples "
-              f"and {len(self.X_test)} test samples using {DATASET_TYPE.upper()} dataset")
-        
-        # Initialize the model
-        self.model = model_loader.get_model(self.X_train.shape[1:])
 
     def get_parameters(self, config):
         return self.model.get_weights()
